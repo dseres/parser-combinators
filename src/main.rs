@@ -37,3 +37,31 @@ fn test_match_literal() {
     let kiskut ="Kiskút, kerekeskút van az udvarunkban";
     assert_eq!( Err(kiskut), parse_hello(kiskut))   
 }
+
+fn identifier(input: &str) -> Result< (&str,String), &str>{
+    let mut matched = String::new();
+    let mut chars = input.chars();
+
+    match chars.next() {
+        Some(next) if next.is_alphabetic() => matched.push(next),
+        _ => return Err(input)
+    }
+
+    while let Some(next) = chars.next() {
+        if next.is_alphanumeric() || next == '-' {
+            matched.push(next)
+        } else {
+            break
+        }
+    }
+
+    Ok( ( &input[matched.len() .. ], matched) )
+}
+
+#[test]
+fn test_identifier() {
+    assert_eq!( Ok((", world!","Hello".to_string())), identifier("Hello, world!"));
+    assert_eq!( Ok(("", "abc-12---q1w".to_string())), identifier("abc-12---q1w"));
+    assert_eq!( Ok(("!2---q1w", "abc-1".to_string())), identifier("abc-1!2---q1w"));
+    assert_eq!( Err("!abc"), identifier("!abc"))
+}
