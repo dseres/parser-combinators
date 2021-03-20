@@ -90,7 +90,27 @@ where
 #[test]
 fn test_pair() {
     let tag_opener = pair(match_literal("<"), identifier);
-    assert_eq!( Ok(("/>", ((),"element".to_string()))), tag_opener("<element/>") );
-    assert_eq!( Err("oops"), tag_opener("oops"));
-    assert_eq!( Err("!oops"), tag_opener("<!oops"));
+    assert_eq!(
+        Ok(("/>", ((), "element".to_string()))),
+        tag_opener("<element/>")
+    );
+    assert_eq!(Err("oops"), tag_opener("oops"));
+    assert_eq!(Err("!oops"), tag_opener("<!oops"));
+}
+
+fn map<P, F, A, B>(parser: P, map_fn: F) -> impl Fn(&str) -> Result<(&str, B), &str>
+where
+    P: Fn(&str) -> Result<(&str, A), &str>,
+    F: Fn(A) -> B,
+{
+    move |input: &str| parser(input).map( |(next,result)| (next,map_fn(result)))
+}
+
+#[test]
+fn test_map() {
+    let map_identifier_to_int = |s: String| i64::from_str_radix(s.as_str(),16).unwrap();
+    let int_parser = map(identifier, map_identifier_to_int);
+    assert_eq!(
+        Ok((", world!", 0xa123)), int_parser("a123, world!")
+    );
 }
