@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
+#[cfg(not(tarpaulin_include))]
 fn main() {
     println!("Hello, world!");
-    println!("{:?}", the_letter_a("Hello, world!"));
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -12,12 +12,33 @@ struct Element {
     children: Vec<Element>,
 }
 
+type ParserResult<'a, Output> = Result<(&'a str, Output), &'a str>;
+
+trait Parser<'a, Output> {
+    fn parse(&self, input: &'a str) -> ParserResult<'a, Output>;
+}
+
+impl<'a, F, Output> Parser<'a, Output> for F
+where
+    F: Fn(&'a str) -> ParserResult<'a, Output>,
+{
+    fn parse(&self, input: &'a str) -> ParserResult<'a, Output> {
+        self(input)
+    }
+}
+
 fn the_letter_a(input: &str) -> Result<(&str, ()), &str> {
     let n = input.chars().next();
     match n {
         Some('a') => Ok((&input['a'.len_utf8()..], ())),
         _ => Err(input),
     }
+}
+
+#[test]
+fn test_the_letter_a() {
+    assert_eq!( Ok(("bcde",())), the_letter_a("abcde"));    
+    assert_eq!( Err("edcba"), the_letter_a("edcba"));    
 }
 
 fn match_literal(expected: &'static str) -> impl Fn(&str) -> Result<(&str, ()), &str> {
@@ -73,17 +94,17 @@ fn test_identifier() {
     assert_eq!(Err("!abc"), identifier("!abc"))
 }
 
-fn pair<P1, P2, R1, R2>(parser1: P1, parser2: P2) -> impl Fn(&str) -> Result<(&str, (R1, R2)), &str>
+fn pair<'a, P1, P2, R1, R2>(parser1: P1, parser2: P2) -> impl Parser<'a, (R1, R2)>
 where
-    P1: Fn(&str) -> Result<(&str, R1), &str>,
-    P2: Fn(&str) -> Result<(&str, R2), &str>,
+    P1: Parser<'a, R1>,
+    P2: Parser<'a, R2>,
 {
-    move |input: &str| match parser1(input) {
-        Ok((next_input, result1)) => match parser2(next_input) {
-            Ok((final_input, result2)) => Ok((final_input, (result1, result2))),
-            Err(err) => Err(err),
-        },
-        Err(err) => Err(err),
+    move |input: &'a str| {
+        parser1.parse(input).and_then(|(next_input, result1)| {
+            parser2
+                .parse(next_input)
+                .map(|(last_input, result2)| (last_input, (result1, result2)))
+        })
     }
 }
 
@@ -92,25 +113,27 @@ fn test_pair() {
     let tag_opener = pair(match_literal("<"), identifier);
     assert_eq!(
         Ok(("/>", ((), "element".to_string()))),
-        tag_opener("<element/>")
+        tag_opener.parse("<element/>")
     );
-    assert_eq!(Err("oops"), tag_opener("oops"));
-    assert_eq!(Err("!oops"), tag_opener("<!oops"));
+    assert_eq!(Err("oops"), tag_opener.parse("oops"));
+    assert_eq!(Err("!oops"), tag_opener.parse("<!oops"));
 }
 
-fn map<P, F, A, B>(parser: P, map_fn: F) -> impl Fn(&str) -> Result<(&str, B), &str>
+fn map<'a, P, F, A, B>(parser: P, map_fn: F) -> impl Parser<'a, B>
 where
-    P: Fn(&str) -> Result<(&str, A), &str>,
+    P: Parser<'a, A>,
     F: Fn(A) -> B,
 {
-    move |input: &str| parser(input).map( |(next,result)| (next,map_fn(result)))
+    move |input: &'a str| {
+        parser
+            .parse(input)
+            .map(|(next, result)| (next, map_fn(result)))
+    }
 }
 
 #[test]
 fn test_map() {
-    let map_identifier_to_int = |s: String| i64::from_str_radix(s.as_str(),16).unwrap();
+    let map_identifier_to_int = |s: String| i64::from_str_radix(s.as_str(), 16).unwrap();
     let int_parser = map(identifier, map_identifier_to_int);
-    assert_eq!(
-        Ok((", world!", 0xa123)), int_parser("a123, world!")
-    );
+    assert_eq!(Ok((", world!", 0xa123)), int_parser.parse("a123, world!"));
 }
