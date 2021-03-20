@@ -41,8 +41,8 @@ fn test_the_letter_a() {
     assert_eq!( Err("edcba"), the_letter_a("edcba"));    
 }
 
-fn match_literal(expected: &'static str) -> impl Fn(&str) -> Result<(&str, ()), &str> {
-    move |input: &str| match input.get(0..expected.len()) {
+fn match_literal<'a>(expected: &'static str) -> impl Parser<'a, ()> {
+    move |input: &'a str| match input.get(0..expected.len()) {
         Some(next) if next == expected => Ok((&input[expected.len()..], ())),
         _ => Err(input),
     }
@@ -51,13 +51,13 @@ fn match_literal(expected: &'static str) -> impl Fn(&str) -> Result<(&str, ()), 
 #[test]
 fn test_match_literal() {
     let parse_hello = match_literal("Hello");
-    assert_eq!(Ok((", world!", ())), parse_hello("Hello, world!"));
-    assert_eq!(Ok((" világ!", ())), parse_hello("Hello világ!"));
+    assert_eq!(Ok((", world!", ())), parse_hello.parse("Hello, world!"));
+    assert_eq!(Ok((" világ!", ())), parse_hello.parse("Hello világ!"));
     let kiskut = "Kiskút, kerekeskút van az udvarunkban";
-    assert_eq!(Err(kiskut), parse_hello(kiskut))
+    assert_eq!(Err(kiskut), parse_hello.parse(kiskut))
 }
 
-fn identifier(input: &str) -> Result<(&str, String), &str> {
+fn identifier<'a>(input: &'a str) -> ParserResult<'a, String> {
     let mut matched = String::new();
     let mut chars = input.chars();
 
@@ -137,3 +137,27 @@ fn test_map() {
     let int_parser = map(identifier, map_identifier_to_int);
     assert_eq!(Ok((", world!", 0xa123)), int_parser.parse("a123, world!"));
 }
+
+fn left<'a, P1, P2, R1, R2>( parser1: P1, parser2: P2) -> impl Parser<'a, R1>
+where   
+    P1: Parser<'a, R1>,
+    P2: Parser<'a, R2>,
+{
+    map( pair(parser1, parser2), | (result1, _result2)| result1)
+}
+
+
+fn right<'a, P1, P2, R1, R2>( parser1: P1, parser2: P2) -> impl Parser<'a, R2>
+where   
+    P1: Parser<'a, R1>,
+    P2: Parser<'a, R2>,
+{
+    map( pair(parser1, parser2), | (_result1, result2)| result2)
+}
+
+#[test]
+fn test_left_right() {
+    assert_eq!( Ok(("cd",("ab12".to_string()))), left(identifier, match_literal("!")).parse("ab12!cd"));
+    assert_eq!( Ok(("cd",())), right(identifier, match_literal("!")).parse("ab12!cd"));
+}
+
