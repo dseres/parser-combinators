@@ -57,7 +57,7 @@ fn test_match_literal() {
     assert_eq!(Err(kiskut), parse_hello.parse(kiskut))
 }
 
-fn identifier<'a>(input: &'a str) -> ParserResult<'a, String> {
+fn identifier(input: &str) -> ParserResult<String> {
     let mut matched = String::new();
     let mut chars = input.chars();
 
@@ -66,7 +66,7 @@ fn identifier<'a>(input: &'a str) -> ParserResult<'a, String> {
         _ => return Err(input),
     }
 
-    while let Some(next) = chars.next() {
+    for next in chars {
         if next.is_alphanumeric() || next == '-' {
             matched.push(next)
         } else {
@@ -255,41 +255,134 @@ where
 }
 
 #[test]
-fn test_pred (){
-    let parser = pred( any_char, |&c| c == 'Á');
+fn test_pred() {
+    let parser = pred(any_char, |&c| c == 'Á');
     assert_eq!(Ok(("rvíztűrő", 'Á')), parser.parse("Árvíztűrő"));
-    assert_eq!( Err("árvíztűrő"), parser.parse("árvíztűrő"));
-    assert_eq!( Err(""), parser.parse(""));
+    assert_eq!(Err("árvíztűrő"), parser.parse("árvíztűrő"));
+    assert_eq!(Err(""), parser.parse(""));
 }
 
-fn whitespace_char<'a>() -> impl Parser<'a, char>
-{
-    pred( any_char, |&c| c.is_whitespace())
+fn whitespace_char<'a>() -> impl Parser<'a, char> {
+    pred(any_char, |&c| c.is_whitespace())
 }
 
 #[test]
 fn test_whitespace_char() {
-    assert_eq!( Ok(("abc",' ')), whitespace_char().parse(" abc"));
-    assert_eq!( Ok(("abc",'\n')), whitespace_char().parse("\nabc"));
-    assert_eq!( Ok(("abc",'\t')), whitespace_char().parse("\tabc"));
-    assert_eq!( Err("abc"), whitespace_char().parse("abc"));
+    assert_eq!(Ok(("abc", ' ')), whitespace_char().parse(" abc"));
+    assert_eq!(Ok(("abc", '\n')), whitespace_char().parse("\nabc"));
+    assert_eq!(Ok(("abc", '\t')), whitespace_char().parse("\tabc"));
+    assert_eq!(Err("abc"), whitespace_char().parse("abc"));
 }
 
-fn space0<'a>()-> impl Parser<'a, Vec<char> >
-{
-    zero_or_more( whitespace_char())
+fn space0<'a>() -> impl Parser<'a, Vec<char>> {
+    zero_or_more(whitespace_char())
 }
 
-
-fn space1<'a>()-> impl  Parser<'a, Vec<char> >
-{
-    one_or_more( whitespace_char())
+fn space1<'a>() -> impl Parser<'a, Vec<char>> {
+    one_or_more(whitespace_char())
 }
 
 #[test]
 fn test_space() {
-    assert_eq!( Ok(("abc", vec![' ', '\t', ' ', '\n'])), space1().parse(" \t \nabc"));
-    assert_eq!( Ok(("abc", vec![' ', '\t', ' ', '\n'])), space0().parse(" \t \nabc"));
-    assert_eq!( Err("abc"), space1().parse("abc"));
-    assert_eq!( Ok(("abc", vec![])), space0().parse("abc"));
+    assert_eq!(
+        Ok(("abc", vec![' ', '\t', ' ', '\n'])),
+        space1().parse(" \t \nabc")
+    );
+    assert_eq!(
+        Ok(("abc", vec![' ', '\t', ' ', '\n'])),
+        space0().parse(" \t \nabc")
+    );
+    assert_eq!(Err("abc"), space1().parse("abc"));
+    assert_eq!(Ok(("abc", vec![])), space0().parse("abc"));
+}
+
+fn quoted_string<'a>() -> impl Parser<'a, String> {
+    map(
+        right(
+            match_literal("\""),
+            left(
+                zero_or_more(pred(any_char, |&c| c != '"')),
+                match_literal("\""),
+            ),
+        ),
+        |chars| chars.iter().collect(),
+    )
+}
+
+#[test]
+fn test_quoted_string() {
+    assert_eq!(
+        Ok(("", "Helló".to_string())),
+        quoted_string().parse("\"Helló\"")
+    );
+    assert_eq!(Err("Helló"), quoted_string().parse("Helló"));
+    assert_eq!(Err("Helló\""), quoted_string().parse("Helló\""));
+    assert_eq!(Err(""), quoted_string().parse("\"Helló"));
+}
+
+fn attribute_pair<'a>() -> impl Parser<'a, (String, String)> {
+    pair(
+        identifier,
+        right(
+            right(space0(), match_literal("=")),
+            right(space0(), quoted_string()),
+        ),
+    )
+    //pair( identifier, right( match_literal("="), quoted_string()))
+}
+
+#[test]
+fn test_attribute_paid() {
+    assert_eq!(
+        Ok(("", ("key".to_string(), "value".to_string()))),
+        attribute_pair().parse("key  =\n\t\"value\"")
+    );
+}
+
+fn attributes<'a>() -> impl Parser<'a, Vec<(String, String)>> {
+    zero_or_more(right(space1(), attribute_pair()))
+}
+
+#[test]
+fn test_attributes() {
+    assert_eq!(
+        Ok((
+            "",
+            vec![
+                ("firstname".to_string(), "Lópici".to_string()),
+                ("lastname".to_string(), "Gáspár".to_string())
+            ]
+        )),
+        attributes().parse(" firstname=\"Lópici\" lastname=\"Gáspár\"")
+    )
+}
+
+fn element_start<'a>() -> impl Parser<'a, (String, Vec<(String, String)>)> {
+    right(match_literal("<"), pair(identifier, attributes()))
+}
+
+fn single_element<'a>() -> impl Parser<'a, Element> {
+    map(
+        left(element_start(), right(space0(), match_literal("/>"))),
+        |(name, attributes)| Element {
+            name,
+            attributes,
+            children: vec![],
+        },
+    )
+}
+
+#[test]
+fn test_single_element() {
+    assert_eq!(
+        Ok((
+            "",
+            Element {
+                name: "div".to_string(),
+                attributes: vec![("class".to_string(), "div1".to_string())],
+                children: vec![]
+            }
+        )),
+        single_element().parse("<div class=\"div1\"/>")
+    );
 }
