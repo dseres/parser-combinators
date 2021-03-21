@@ -16,6 +16,36 @@ type ParserResult<'a, Output> = Result<(&'a str, Output), &'a str>;
 
 trait Parser<'a, Output> {
     fn parse(&self, input: &'a str) -> ParserResult<'a, Output>;
+
+    fn map<F, NewOutput>(self, map_fn: F) -> BoxedParser<'a, NewOutput>
+    where
+        Self: Sized + 'a,
+        Output: 'a,
+        NewOutput: 'a,
+        F: Fn(Output) -> NewOutput + 'a,
+    {
+        BoxedParser::new(map(self, map_fn))
+    }
+
+    fn pred<F>(self, pred_fn: F) -> BoxedParser<'a, Output>
+    where
+        Self: Sized + 'a,
+        F: Fn(&Output) -> bool + 'a,
+        Output: 'a,
+    {
+        BoxedParser::new(pred(self, pred_fn))
+    }
+
+    fn and_then<F, NextParser, NewOutput>(self, f: F) -> BoxedParser<'a, NewOutput>
+    where
+        Self: Sized + 'a,
+        Output: 'a,
+        NewOutput: 'a,
+        NextParser: Parser<'a, NewOutput> + 'a,
+        F: Fn(Output) -> NextParser + 'a,
+    {
+        BoxedParser::new(and_then(self, f))
+    }
 }
 
 impl<'a, F, Output> Parser<'a, Output> for F
@@ -24,6 +54,27 @@ where
 {
     fn parse(&self, input: &'a str) -> ParserResult<'a, Output> {
         self(input)
+    }
+}
+
+struct BoxedParser<'a, Output> {
+    parser: Box<dyn Parser<'a, Output> + 'a>,
+}
+
+impl<'a, Output> BoxedParser<'a, Output> {
+    fn new<P>(parser: P) -> Self
+    where
+        P: Parser<'a, Output> + 'a,
+    {
+        BoxedParser {
+            parser: Box::new(parser),
+        }
+    }
+}
+
+impl<'a, Output> Parser<'a, Output> for BoxedParser<'a, Output> {
+    fn parse(&self, input: &'a str) -> ParserResult<'a, Output> {
+        self.parser.parse(input)
     }
 }
 
@@ -256,14 +307,14 @@ where
 
 #[test]
 fn test_pred() {
-    let parser = pred(any_char, |&c| c == 'Á');
+    let parser = any_char.pred(|&c| c == 'Á');
     assert_eq!(Ok(("rvíztűrő", 'Á')), parser.parse("Árvíztűrő"));
     assert_eq!(Err("árvíztűrő"), parser.parse("árvíztűrő"));
     assert_eq!(Err(""), parser.parse(""));
 }
 
 fn whitespace_char<'a>() -> impl Parser<'a, char> {
-    pred(any_char, |&c| c.is_whitespace())
+    any_char.pred(|&c| c.is_whitespace())
 }
 
 #[test]
@@ -297,16 +348,14 @@ fn test_space() {
 }
 
 fn quoted_string<'a>() -> impl Parser<'a, String> {
-    map(
-        right(
+    right(
+        match_literal("\""),
+        left(
+            zero_or_more(any_char.pred(|&c| c != '"')),
             match_literal("\""),
-            left(
-                zero_or_more(pred(any_char, |&c| c != '"')),
-                match_literal("\""),
-            ),
         ),
-        |chars| chars.iter().collect(),
     )
+    .map(|chars| chars.iter().collect())
 }
 
 #[test]
@@ -357,19 +406,16 @@ fn test_attributes() {
     )
 }
 
-fn element_start<'a>() -> impl Parser<'a, (String, Vec<(String, String)>)> {
-    right(match_literal("<"), pair(identifier, attributes()))
+fn open_element<'a>() -> impl Parser<'a, Element> {
+    right(match_literal("<"), pair(identifier, attributes())).map(|(name, attributes)| Element {
+        name,
+        attributes,
+        children: vec![],
+    })
 }
 
 fn single_element<'a>() -> impl Parser<'a, Element> {
-    map(
-        left(element_start(), right(space0(), match_literal("/>"))),
-        |(name, attributes)| Element {
-            name,
-            attributes,
-            children: vec![],
-        },
-    )
+    left(open_element(), right(space0(), match_literal("/>")))
 }
 
 #[test]
@@ -385,4 +431,120 @@ fn test_single_element() {
         )),
         single_element().parse("<div class=\"div1\"/>")
     );
+}
+
+fn either<'a, P1, P2, A>(parser1: P1, parser2: P2) -> impl Parser<'a, A>
+where
+    P1: Parser<'a, A>,
+    P2: Parser<'a, A>,
+{
+    move |input| match parser1.parse(input) {
+        Ok((next_str, result)) => Ok((next_str, result)),
+        Err(_) => parser2.parse(input),
+    }
+}
+
+#[test]
+fn test_either() {
+    assert_eq!(
+        Ok(("-", ())),
+        either(match_literal("+"), match_literal("-")).parse("+-")
+    );
+    assert_eq!(
+        Ok(("+", ())),
+        either(match_literal("+"), match_literal("-")).parse("-+")
+    );
+    assert_eq!(
+        Err("!+-"),
+        either(match_literal("+"), match_literal("-")).parse("!+-")
+    );
+}
+
+fn close_element<'a>(expected_name: String) -> impl Parser<'a, String> {
+    right(match_literal("</"), left(identifier, match_literal(">")))
+        .pred(move |name| name == &expected_name)
+}
+
+#[test]
+fn test_close_element() {
+    assert_eq!(
+        Ok(("", "div".to_string())),
+        close_element("div".to_string()).parse("</div>")
+    )
+}
+
+fn and_then<'a, P, F, A, B, NextP>(parser: P, f: F) -> impl Parser<'a, B>
+where
+    P: Parser<'a, A>,
+    NextP: Parser<'a, B>,
+    F: Fn(A) -> NextP,
+    //F: Fn(A)-> BoxedParser<'a, B>,
+{
+    move |input: &'a str| match parser.parse(input) {
+        Ok((next, result)) => f(result).parse(next),
+        Err(err) => Err(err),
+    }
+}
+
+fn parent_element<'a>() -> impl Parser<'a, Element> {
+    left(open_element(),left(space0(),match_literal(">"))).and_then( |e| {
+        left(zero_or_more(element()), close_element(e.name.clone())).map(move |children| {
+            let mut e = e.clone();
+            e.children = children;
+            e
+        })
+    })
+}
+
+fn element<'a>() -> impl Parser<'a, Element> {
+    right(
+        space0(), 
+        left( 
+            either(single_element(), parent_element()),
+            space0()
+        
+)   )
+}
+
+
+#[test]
+fn xml_parser() {
+    let doc = r#"
+        <top label="Top">
+            <semi-bottom label="Bottom"/>
+            <middle>
+                <bottom label="Another bottom"/>
+            </middle>
+        </top>"#;
+    let parsed_doc = Element {
+        name: "top".to_string(),
+        attributes: vec![("label".to_string(), "Top".to_string())],
+        children: vec![
+            Element {
+                name: "semi-bottom".to_string(),
+                attributes: vec![("label".to_string(), "Bottom".to_string())],
+                children: vec![],
+            },
+            Element {
+                name: "middle".to_string(),
+                attributes: vec![],
+                children: vec![Element {
+                    name: "bottom".to_string(),
+                    attributes: vec![("label".to_string(), "Another bottom".to_string())],
+                    children: vec![],
+                }],
+            },
+        ],
+    };
+    assert_eq!(Ok(("", parsed_doc)), element().parse(doc));
+}
+
+
+#[test]
+fn mismatched_closing_tag() {
+    let doc = r#"
+        <top>
+            <bottom/>
+        </middle>"#;
+    assert_eq!(Err("</middle>"), element().parse(doc));
 }
